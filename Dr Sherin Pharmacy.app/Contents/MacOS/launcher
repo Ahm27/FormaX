@@ -1,0 +1,11 @@
+#!/bin/zsh
+PROJECT_DIR="/Users/ahmedamr/Downloads/Pharmacy-sys"
+
+/usr/bin/osascript <<OSA
+tell application "Terminal"
+  activate
+  do script "cd \"$PROJECT_DIR\" && npm start"
+end tell
+OSA
+
+exit 0

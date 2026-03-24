@@ -1,0 +1,11 @@
+node_modules
+.DS_Store
+dist/
+backups/
+release/
+pharmacy.db
+pharmacy.db-shm
+pharmacy.db-wal
+pharmacy.db.pre_*
+sync-data/google-drive-state.json
+sync-data/local-backup-schedule.json
