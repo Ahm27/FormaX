@@ -33,6 +33,35 @@ PowerShell fallback:
 
 - `Start Dr Sherin Pharmacy.ps1`
 
+## Desktop App (.exe / .app)
+
+This project now includes an Electron desktop wrapper, so the client can run it as a real app
+window without a terminal.
+
+Local desktop test:
+
+```bash
+npm run electron:start
+```
+
+Windows `.exe` build:
+
+```bash
+npm install
+npm run electron:dist:win
+```
+
+Windows portable desktop build:
+
+```bash
+npm install
+npm run electron:dist:portable
+```
+
+The generated Electron packages will be placed in:
+
+- `release/electron`
+
 ## Windows Without Installing Anything
 
 This project can be delivered to a Windows client without requiring them to install Node, but the

@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { api, getErrorMessage } from "../lib/api";
 import { useAppSettings } from "../lib/app-settings";
+import { isDesktopBridgeAvailable, type DesktopStorageInfo } from "../lib/desktop-bridge";
 import { formatBytes } from "../lib/format";
 import type { SystemInfo, SystemLog } from "../lib/types";
 
@@ -34,6 +35,8 @@ export function Settings() {
   const [databasePassword, setDatabasePassword] = useState("");
   const [scheduledBackupsEnabled, setScheduledBackupsEnabled] = useState(false);
   const [scheduledBackupInterval, setScheduledBackupInterval] = useState("1440");
+  const [desktopStorage, setDesktopStorage] = useState<DesktopStorageInfo | null>(null);
+  const [storageBusy, setStorageBusy] = useState<null | "choose" | "restart">(null);
 
   async function downloadFile(url: string, fallbackFilename: string) {
     const response = await api.get<Blob>(url, { responseType: "blob" });
@@ -70,6 +73,16 @@ export function Settings() {
 
   useEffect(() => {
     void loadMeta();
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktopBridgeAvailable()) {
+      return;
+    }
+
+    void window.desktopBridge!.getStorageInfo().then(setDesktopStorage).catch(() => {
+      setDesktopStorage(null);
+    });
   }, []);
 
   async function handleExportData() {
@@ -159,6 +172,52 @@ export function Settings() {
     }
   }
 
+  async function handleChooseStorageFolder() {
+    if (!window.desktopBridge) {
+      return;
+    }
+
+    setStorageBusy("choose");
+    setStatusMessage(null);
+
+    try {
+      const selectedDirectory = await window.desktopBridge.chooseDataDirectory();
+      if (!selectedDirectory) {
+        return;
+      }
+
+      const result = await window.desktopBridge.setDataDirectory(selectedDirectory);
+      setDesktopStorage(result);
+      setStatusMessage(
+        language === "ar"
+          ? result.migrated
+            ? "تم نقل قاعدة البيانات والنسخ الاحتياطية إلى المجلد الجديد. أعد تشغيل التطبيق لتفعيل المسار الجديد."
+            : "تم حفظ مسار البيانات الجديد. أعد تشغيل التطبيق لتفعيله."
+          : result.migrated
+          ? "Database and backups were moved to the new folder. Restart the app to use the new path."
+          : "New data folder saved. Restart the app to use the new path."
+      );
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error, language === "ar" ? "تعذر تغيير مجلد البيانات." : "Unable to change the data folder."));
+    } finally {
+      setStorageBusy(null);
+    }
+  }
+
+  async function handleRestartDesktopApp() {
+    if (!window.desktopBridge) {
+      return;
+    }
+
+    setStorageBusy("restart");
+    try {
+      await window.desktopBridge.restartApp();
+    } catch (error) {
+      setStatusMessage(getErrorMessage(error, language === "ar" ? "تعذر إعادة تشغيل التطبيق." : "Unable to restart the app."));
+      setStorageBusy(null);
+    }
+  }
+
   const infoCards = [
     { label: t("version"), value: systemInfo?.version ?? "-" },
     { label: t("databaseSize"), value: systemInfo ? formatBytes(systemInfo.databaseSizeBytes) : "-" },
@@ -187,6 +246,31 @@ export function Settings() {
           confirm: "Enter",
           cancel: "Cancel",
           invalid: "Incorrect password.",
+        };
+
+  const desktopStorageText =
+    language === "ar"
+      ? {
+          title: "مكان تخزين البيانات",
+          hint: "يمكنك اختيار المجلد الذي سيحفظ قاعدة البيانات والنسخ الاحتياطية والمزامنة على هذا الجهاز.",
+          currentFolder: "المجلد الحالي",
+          databaseFile: "ملف قاعدة البيانات",
+          backupFolder: "مجلد النسخ الاحتياطية",
+          choose: "اختيار مجلد جديد",
+          restart: "إعادة تشغيل التطبيق",
+          restartHint: "يلزم إعادة التشغيل بعد تغيير المسار.",
+          browserMode: "هذا الخيار متاح فقط داخل نسخة سطح المكتب من التطبيق.",
+        }
+      : {
+          title: "Data Storage Location",
+          hint: "Choose where this computer stores the database, backups, and sync data.",
+          currentFolder: "Current Folder",
+          databaseFile: "Database File",
+          backupFolder: "Backup Folder",
+          choose: "Choose New Folder",
+          restart: "Restart App",
+          restartHint: "Restart is required after changing the folder.",
+          browserMode: "This option is available only inside the desktop app.",
         };
 
   function handleDatabaseAccess() {
@@ -485,6 +569,80 @@ export function Settings() {
                 {systemInfo?.scheduledBackup?.lastBackupFilename || "-"}
               </div>
             </div>
+          </div>
+
+          <div className="bg-card rounded-[26px] border border-border p-6 shadow-sm">
+            <div className="mb-6 flex items-center gap-3">
+              <Database className="h-6 w-6 text-primary" />
+              <div>
+                <h2 className="text-xl font-semibold">{desktopStorageText.title}</h2>
+                <p className="text-sm text-muted-foreground">{desktopStorageText.hint}</p>
+              </div>
+            </div>
+
+            {!isDesktopBridgeAvailable() ? (
+              <div className="rounded-2xl border border-border bg-accent/40 px-4 py-3 text-sm text-muted-foreground">
+                {desktopStorageText.browserMode}
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded-2xl border border-border bg-accent/40 p-4">
+                    <div className="mb-2 text-sm font-medium">{desktopStorageText.currentFolder}</div>
+                    <div className="text-sm break-all text-muted-foreground">
+                      {desktopStorage?.dataDirectory ?? "-"}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-border bg-accent/40 p-4">
+                    <div className="mb-2 text-sm font-medium">{desktopStorageText.databaseFile}</div>
+                    <div className="text-sm break-all text-muted-foreground">
+                      {desktopStorage?.databasePath ?? "-"}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-border bg-accent/30 p-4">
+                  <div className="mb-2 text-sm font-medium">{desktopStorageText.backupFolder}</div>
+                  <div className="text-sm break-all text-muted-foreground">
+                    {desktopStorage?.backupDirectory ?? "-"}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleChooseStorageFolder()}
+                    disabled={storageBusy !== null}
+                    className="rounded-xl border border-border px-4 py-3 text-sm font-medium transition-colors hover:bg-accent disabled:opacity-60"
+                  >
+                    {storageBusy === "choose" ? (
+                      <span className="inline-flex items-center gap-2">
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                        {language === "ar" ? "جاري الاختيار..." : "Choosing..."}
+                      </span>
+                    ) : (
+                      desktopStorageText.choose
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleRestartDesktopApp()}
+                    disabled={storageBusy !== null}
+                    className="rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+                  >
+                    {storageBusy === "restart" ? (
+                      <span className="inline-flex items-center gap-2">
+                        <LoaderCircle className="h-4 w-4 animate-spin" />
+                        {language === "ar" ? "جاري إعادة التشغيل..." : "Restarting..."}
+                      </span>
+                    ) : (
+                      desktopStorageText.restart
+                    )}
+                  </button>
+                  <span className="text-sm text-muted-foreground">{desktopStorageText.restartHint}</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 

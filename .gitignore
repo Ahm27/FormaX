@@ -3,6 +3,10 @@ node_modules
 dist/
 backups/
 release/
+all-db-backups-*/
+windows-build-*/
+*.zip
+*.app/
 pharmacy.db
 pharmacy.db-shm
 pharmacy.db-wal

@@ -8,20 +8,26 @@ import { fileURLToPath } from "url";
 import XLSX from "xlsx";
 
 const app = express();
-const PORT = 3001;
+const DEFAULT_PORT = Number(process.env.PORT || 3001);
 const PROGRAM_TYPES = new Set(["Weight Loss", "Weight Gain"]);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const projectRoot = path.resolve(__dirname, "..");
-const dbPath = path.join(projectRoot, "pharmacy.db");
-const backupDirectory = path.join(projectRoot, "backups");
-const cleanupJobsDirectory = path.join(projectRoot, "cleanup-jobs");
-const syncDataDirectory = path.join(projectRoot, "sync-data");
+const projectRoot = process.env.PHARMACY_PROJECT_ROOT || path.resolve(__dirname, "..");
+const runtimeDataRoot = process.env.PHARMACY_DATA_ROOT || projectRoot;
+const scriptRoot = process.env.PHARMACY_SCRIPT_ROOT || projectRoot;
+const dbPath = process.env.PHARMACY_DB_PATH || path.join(runtimeDataRoot, "pharmacy.db");
+const backupDirectory = process.env.PHARMACY_BACKUP_DIR || path.join(runtimeDataRoot, "backups");
+const cleanupJobsDirectory = process.env.PHARMACY_CLEANUP_DIR || path.join(runtimeDataRoot, "cleanup-jobs");
+const syncDataDirectory = process.env.PHARMACY_SYNC_DIR || path.join(runtimeDataRoot, "sync-data");
 const googleDriveStatePath = path.join(syncDataDirectory, "google-drive-state.json");
 const localBackupSchedulePath = path.join(syncDataDirectory, "local-backup-schedule.json");
 const GOOGLE_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 const GOOGLE_DRIVE_FOLDER_NAME = "Dr Sherin Pharmacy Sync";
-const GOOGLE_DRIVE_FRONTEND_URL = "http://localhost:5173";
+const GOOGLE_DRIVE_FRONTEND_URL = process.env.GOOGLE_DRIVE_FRONTEND_URL || "http://localhost:5173";
+
+function getActiveBackendPort() {
+  return Number(process.env.PORT || DEFAULT_PORT);
+}
 
 app.use(
   cors({
@@ -469,8 +475,10 @@ function scheduleImportCleanup(task) {
   fs.writeFileSync(taskFilePath, JSON.stringify({ ...task, dbPath }), "utf8");
 
   const workerPath = path.join(__dirname, "cleanup-worker.js");
-  const child = spawn(process.execPath, [workerPath, taskFilePath], {
+  const nodeExec = getNodeExecConfig();
+  const child = spawn(nodeExec.command, [workerPath, taskFilePath], {
     detached: true,
+    env: nodeExec.env,
     stdio: "ignore",
   });
   child.unref();
@@ -492,7 +500,8 @@ function runCleanupInWorker(task) {
     fs.writeFileSync(taskFilePath, JSON.stringify({ ...task, dbPath }), "utf8");
 
     const workerPath = path.join(__dirname, "cleanup-worker.js");
-    execFile(process.execPath, [workerPath, taskFilePath], (error, stdout, stderr) => {
+    const nodeExec = getNodeExecConfig();
+    execFile(nodeExec.command, [workerPath, taskFilePath], { env: nodeExec.env }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(stderr || error.message));
         return;
@@ -520,6 +529,23 @@ function runFullDataCleanup() {
   return {
     cleanedClients: clientIds.length,
     cleanedFollowups: followupIds.length,
+  };
+}
+
+function getNodeExecConfig() {
+  if (process.versions.electron) {
+    return {
+      command: process.execPath,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: "1",
+      },
+    };
+  }
+
+  return {
+    command: process.execPath,
+    env: process.env,
   };
 }
 
@@ -3406,7 +3432,7 @@ app.post("/sync/google-drive/connect", (req, res) => {
     });
   }
 
-  const redirectUri = `http://localhost:${PORT}/sync/google-drive/callback`;
+  const redirectUri = `http://localhost:${getActiveBackendPort()}/sync/google-drive/callback`;
   const frontendUrl = normalizeText(req.body?.frontendUrl) || GOOGLE_DRIVE_FRONTEND_URL;
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.searchParams.set("client_id", state.clientId);
@@ -3424,7 +3450,7 @@ app.post("/sync/google-drive/connect", (req, res) => {
 app.get("/sync/google-drive/callback", async (req, res) => {
   const code = normalizeText(req.query.code);
   const rawState = normalizeText(req.query.state);
-  const redirectUri = `http://localhost:${PORT}/sync/google-drive/callback`;
+  const redirectUri = `http://localhost:${getActiveBackendPort()}/sync/google-drive/callback`;
   let frontendUrl = GOOGLE_DRIVE_FRONTEND_URL;
 
   try {
@@ -3607,9 +3633,10 @@ app.delete("/admin/data", (_req, res) => {
 
 app.post("/admin/dedupe-db", async (_req, res, next) => {
   try {
-    const scriptPath = path.join(projectRoot, "scripts", "remove-db-duplicates.mjs");
+    const scriptPath = path.join(scriptRoot, "scripts", "remove-db-duplicates.mjs");
+    const nodeExec = getNodeExecConfig();
     const result = await new Promise((resolve, reject) => {
-      execFile(process.execPath, [scriptPath], { cwd: projectRoot }, (error, stdout, stderr) => {
+      execFile(nodeExec.command, [scriptPath], { cwd: projectRoot, env: nodeExec.env }, (error, stdout, stderr) => {
         if (error) {
           reject(new Error(stderr || error.message));
           return;
@@ -3667,12 +3694,26 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Backend running on http://localhost:${PORT}`);
-  logSystemEvent("Server", "info", `Backend running on http://localhost:${PORT}`);
-  scheduleGoogleDriveAutoSync();
-  scheduleLocalBackups();
-});
+let backendServerInstance = null;
+
+export function startBackendServer(options = {}) {
+  const port = Number(options.port ?? process.env.PORT ?? DEFAULT_PORT);
+  const host = options.host ?? process.env.HOST ?? "127.0.0.1";
+
+  if (backendServerInstance) {
+    return Promise.resolve(backendServerInstance);
+  }
+
+  return new Promise((resolve) => {
+    backendServerInstance = app.listen(port, host, () => {
+      console.log(`Backend running on http://${host}:${port}`);
+      logSystemEvent("Server", "info", `Backend running on http://${host}:${port}`);
+      scheduleGoogleDriveAutoSync();
+      scheduleLocalBackups();
+      resolve(backendServerInstance);
+    });
+  });
+}
 
 function createFollowup(req, res) {
   const created = createFollowupRecord(req.body);
@@ -3686,4 +3727,13 @@ function createFollowup(req, res) {
   }
 
   return res.status(201).json(created.value);
+}
+
+const isDirectRun = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+
+if (isDirectRun) {
+  startBackendServer().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
 }
